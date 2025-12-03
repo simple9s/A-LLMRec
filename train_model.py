@@ -12,6 +12,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
+from models.a_llmrec_gnn import A_LLMRec_GNN
 from models.a_llmrec_model import *
 from pre_train.sasrec.utils import data_partition, SeqDataset, SeqDataset_Inference
 
@@ -50,9 +51,20 @@ def train_model_phase1_(rank, world_size, args):
     if args.multi_gpu:
         setup_ddp(rank, world_size)
         args.device = 'cuda:' + str(rank)
-        
-    model = A_llmrec_model(args).to(args.device)
+
+    # 选择模型
+    if args.use_gnn:
+        model = A_LLMRec_GNN(args).to(args.device)
+        print("Using GNN-enhanced model")
+    else:
+        model = A_llmrec_model(args).to(args.device)
+        print("Using baseline model")
+    # model = A_llmrec_model(args).to(args.device)
     
+    checkpoint_manager = CheckpointManager(
+        checkpoint_dir=f'./checkpoints/stage1/{args.rec_pre_trained_data}/',
+        max_keep=args.max_checkpoints
+    )
     # preprocess data
     dataset = data_partition(args.rec_pre_trained_data, path=f'./data/amazon/{args.rec_pre_trained_data}.txt')
     [user_train, user_valid, user_test, usernum, itemnum] = dataset
@@ -72,14 +84,31 @@ def train_model_phase1_(rank, world_size, args):
         
     adam_optimizer = torch.optim.Adam(model.parameters(), lr=args.stage1_lr, betas=(0.9, 0.98))
     
-    epoch_start_idx = 1
+    # ===== 尝试从checkpoint恢复 =====
+    start_epoch = 1
+    start_step = 0
+    
+    if args.resume:
+        checkpoint = checkpoint_manager.load_checkpoint(
+            model, adam_optimizer, stage=1, device=args.device
+        )
+        if checkpoint:
+            start_epoch = checkpoint['epoch']
+            start_step = checkpoint['step']
+            print(f"Resuming from Epoch {start_epoch}, Step {start_step}")
+
+    epoch_start_idx = start_epoch
     T = 0.0
     model.train()
     t0 = time.time()
     for epoch in tqdm(range(epoch_start_idx, args.num_epochs + 1)):
         if args.multi_gpu:
             train_data_loader.sampler.set_epoch(epoch)
+        epoch_start_step = start_step if epoch == start_epoch else 0
         for step, data in enumerate(train_data_loader):
+            # 跳过已训练的步骤
+            if step < epoch_start_step:
+                continue
             u, seq, pos, neg = data
             u, seq, pos, neg = u.numpy(), seq.numpy(), pos.numpy(), neg.numpy()
             model([u,seq,pos,neg], optimizer=adam_optimizer, batch_iter=[epoch,args.num_epochs + 1,step,num_batch], mode='phase1')
@@ -87,9 +116,29 @@ def train_model_phase1_(rank, world_size, args):
                 if rank ==0:
                     if args.multi_gpu: model.module.save_model(args, epoch1=epoch)
                     else: model.save_model(args, epoch1=epoch)
+            if step % args.checkpoint_interval == 0 and rank == 0:
+                checkpoint_manager.save_checkpoint(
+                    model=model,
+                    optimizer=adam_optimizer,
+                    epoch=epoch,
+                    step=step,
+                    stage=1,
+                    args=args
+                )
         if rank == 0:
             if args.multi_gpu: model.module.save_model(args, epoch1=epoch)
             else: model.save_model(args, epoch1=epoch)
+
+            checkpoint_manager.save_checkpoint(
+                model=model,
+                optimizer=adam_optimizer,
+                epoch=epoch,
+                step=num_batch,
+                stage=1,
+                args=args
+            )
+        # 重置start_step
+        start_step = 0
 
     print('train time :', time.time() - t0)
     if args.multi_gpu:
@@ -102,9 +151,23 @@ def train_model_phase2_(rank,world_size,args):
         args.device = 'cuda:'+str(rank)
     random.seed(0)
 
-    model = A_llmrec_model(args).to(args.device)
-    phase1_epoch = 10
+    checkpoint_manager = CheckpointManager(
+        checkpoint_dir=f'./checkpoints/stage2/{args.rec_pre_trained_data}/',
+        max_keep=args.max_checkpoints
+    )
+
+    if args.use_gnn:
+        model = A_LLMRec_GNN(args).to(args.device)
+        print("Using GNN-enhanced model")
+    else:
+        model = A_llmrec_model(args).to(args.device)
+        print("Using baseline model")
+    # 加载Stage-1的模型
+    phase1_epoch = args.stage1_epochs if hasattr(args, 'stage1_epochs') else 10
     model.load_model(args, phase1_epoch=phase1_epoch)
+
+    if args.use_gradient_checkpointing:
+        GradientCheckpointing.enable_gradient_checkpointing(model)
 
     dataset = data_partition(args.rec_pre_trained_data, path=f'./data/amazon/{args.rec_pre_trained_data}.txt')
     [user_train, user_valid, user_test, usernum, itemnum] = dataset
@@ -123,14 +186,31 @@ def train_model_phase2_(rank,world_size,args):
         train_data_loader = DataLoader(train_data_set, batch_size = args.batch_size2, pin_memory=True, shuffle=True)
     adam_optimizer = torch.optim.Adam(model.parameters(), lr=args.stage2_lr, betas=(0.9, 0.98))
     
-    epoch_start_idx = 1
+    # ===== 尝试从checkpoint恢复 =====
+    start_epoch = 1
+    start_step = 0
+    
+    if args.resume:
+        checkpoint = checkpoint_manager.load_checkpoint(
+            model, adam_optimizer, stage=2, device=args.device
+        )
+        if checkpoint:
+            start_epoch = checkpoint['epoch']
+            start_step = checkpoint['step']
+            print(f"Resuming from Epoch {start_epoch}, Step {start_step}")
+
+    epoch_start_idx = start_epoch
     T = 0.0
     model.train()
     t0 = time.time()
     for epoch in tqdm(range(epoch_start_idx, args.num_epochs + 1)):
         if args.multi_gpu:
             train_data_loader.sampler.set_epoch(epoch)
+        
+        epoch_start_step = start_step if epoch == start_epoch else 0
         for step, data in enumerate(train_data_loader):
+            if step < epoch_start_step:
+                continue
             u, seq, pos, neg = data
             u, seq, pos, neg = u.numpy(), seq.numpy(), pos.numpy(), neg.numpy()
             model([u,seq,pos,neg], optimizer=adam_optimizer, batch_iter=[epoch,args.num_epochs + 1,step,num_batch], mode='phase2')
@@ -138,9 +218,33 @@ def train_model_phase2_(rank,world_size,args):
                 if rank ==0:
                     if args.multi_gpu: model.module.save_model(args, epoch1=phase1_epoch, epoch2=epoch)
                     else: model.save_model(args, epoch1=phase1_epoch, epoch2=epoch)
+            
+            # ===== 更频繁地保存checkpoint（Stage-2训练慢）=====
+            if step % max(10, args.checkpoint_interval) == 0 and rank == 0:
+                checkpoint_manager.save_checkpoint(
+                    model=model,
+                    optimizer=adam_optimizer,
+                    epoch=epoch,
+                    step=step,
+                    stage=2,
+                    args=args
+                )
+
+
         if rank == 0:
             if args.multi_gpu: model.module.save_model(args, epoch1=phase1_epoch, epoch2=epoch)
             else: model.save_model(args, epoch1=phase1_epoch, epoch2=epoch)
+
+            checkpoint_manager.save_checkpoint(
+                model=model,
+                optimizer=adam_optimizer,
+                epoch=epoch,
+                step=num_batch,
+                stage=2,
+                args=args
+            )
+        
+        start_step = 0
     
     print('phase2 train time :', time.time() - t0)
     if args.multi_gpu:
@@ -152,9 +256,15 @@ def inference_(rank, world_size, args):
         setup_ddp(rank, world_size)
         args.device = 'cuda:' + str(rank)
         
-    model = A_llmrec_model(args).to(args.device)
+    if args.use_gnn:
+        model = A_LLMRec_GNN(args).to(args.device)
+        print("Using GNN-enhanced model")
+    else:
+        model = A_llmrec_model(args).to(args.device)
+        print("Using baseline model")
+
     phase1_epoch = 10
-    phase2_epoch = 5
+    phase2_epoch = 10
     model.load_model(args, phase1_epoch=phase1_epoch, phase2_epoch=phase2_epoch)
 
     dataset = data_partition(args.rec_pre_trained_data, path=f'./data/amazon/{args.rec_pre_trained_data}.txt')

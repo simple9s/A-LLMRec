@@ -24,8 +24,9 @@ Download [dataset of 2018 Amazon Review dataset](https://cseweb.ucsd.edu/~jmcaul
 ## Pre-train CF-RecSys (SASRec)
 ```
 cd pre_train/sasrec
-python main.py --device=cuda --dataset Movies_and_TV
+python main.py --device=cuda --dataset Gift_Cards
 ```
+Gift_Cards
 
 ## A-LLMRec Train
 - train stage1
@@ -41,7 +42,7 @@ python main.py --pretrain_stage2 --rec_pre_trained_data Movies_and_TV
 
 To run with multi-GPU setting, assign devices using the CUDA_VISIBLE_DEVICES command and add '--multi_gpu' argument.
 - ex) CUDA_VISIBLE_DEVICES = 0,1 python main.py ... --multi_gpu
-  
+
 
 
 ## Evaluation
@@ -51,3 +52,10 @@ Inference stage generates "recommendation_output.txt" file and writes the recomm
 python main.py --inference --rec_pre_trained_data Movies_and_TV
 python eval.py
 ```
+
+cd pre_train/sasrec
+python main.py --device=cuda --dataset Software
+cd ../../
+python main.py --pretrain_stage1 --rec_pre_trained_data Software
+python main.py --pretrain_stage2 --rec_pre_trained_data Software
+python main.py --inference --rec_pre_trained_data Software  --batch_size_infer 8

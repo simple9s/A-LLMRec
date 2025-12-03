@@ -9,6 +9,7 @@ import numpy as np
 from models.recsys_model import *
 from models.llm4rec import *
 from sentence_transformers import SentenceTransformer
+from utils import create_file_if_not_exists
 
 
 class two_layer_mlp(nn.Module):
@@ -55,6 +56,17 @@ class A_llmrec_model(nn.Module):
         self.lan_HIT=0
         self.num_user = 0
         self.yes = 0
+
+        # Loss tracking for visualization
+        self.training_losses = {
+            'total': [],
+            'bpr': [],
+            'matching': [],
+            'reconstruction': [],
+            'text_reconstruction': [],
+            'alignment_loss':[],
+        }
+        self.loss_step = 0
         
         self.bce_criterion = torch.nn.BCEWithLogitsLoss()
         
@@ -81,6 +93,16 @@ class A_llmrec_model(nn.Module):
             
     def save_model(self, args, epoch1=None, epoch2=None):
         out_dir = f'./models/saved_models/'
+
+        # Save training losses
+        if hasattr(self, 'training_losses') and args.pretrain_stage1:
+            import json
+            loss_file = f'./models/saved_models/{args.rec_pre_trained_data}_training_losses.json'
+            create_file_if_not_exists(loss_file)
+            with open(loss_file, 'w') as f:
+                json.dump(self.training_losses, f, indent=4)
+            print(f"Saved training losses to {loss_file}")
+        
         create_dir(out_dir)
         out_dir += f'{args.rec_pre_trained_data}_{args.recsys}_{epoch1}_'
         if args.pretrain_stage1:
@@ -214,7 +236,7 @@ class A_llmrec_model(nn.Module):
             matching_loss = self.mse(pos_text_matching,pos_text_matching_text) + self.mse(neg_text_matching,neg_text_matching_text)
             reconstruction_loss = self.mse(pos_proj,pos_emb) + self.mse(neg_proj,neg_emb)
             text_reconstruction_loss = self.mse(pos_text_proj,pos_text_embedding.data) + self.mse(neg_text_proj,neg_text_embedding.data)
-            
+            # 论文中提到的超参数搜索（α、β 在 {0.1, 0.2, 0.5, ...} 范围内）
             total_loss = loss + matching_loss + 0.5*reconstruction_loss + 0.2*text_reconstruction_loss
             total_loss.backward()
             optimizer.step()
@@ -224,6 +246,13 @@ class A_llmrec_model(nn.Module):
             gt_loss += matching_loss.item()
             rc_loss += reconstruction_loss.item()
             text_rc_loss += text_reconstruction_loss.item()
+
+            self.training_losses['total'].append(total_loss.item())
+            self.training_losses['bpr'].append(loss.item())
+            self.training_losses['matching'].append(matching_loss.item())
+            self.training_losses['reconstruction'].append(reconstruction_loss.item())
+            self.training_losses['text_reconstruction'].append(text_reconstruction_loss.item())
+
             
         print("loss in epoch {}/{} iteration {}/{}: {} / BPR loss: {} / Matching loss: {} / Item reconstruction: {} / Text reconstruction: {}".format(epoch, total_epoch, step, total_step, mean_loss/iterss, bpr_loss/iterss, gt_loss/iterss, rc_loss/iterss, text_rc_loss/iterss))
     
@@ -295,15 +324,31 @@ class A_llmrec_model(nn.Module):
                 input_text += 'This user has played '
             elif self.args.rec_pre_trained_data == 'Luxury_Beauty' or self.args.rec_pre_trained_data == 'Toys_and_Games':
                 input_text += 'This user has bought '
+            elif self.args.rec_pre_trained_data == 'Prime_Pantry':
+                input_text += 'This user has purchased '
+            elif self.args.rec_pre_trained_data == 'Gift_Cards':
+                input_text += 'This user has bought '
+            elif self.args.rec_pre_trained_data == 'Magazine_Subscriptions':
+                input_text += 'This user has subscribed to '
+            elif self.args.rec_pre_trained_data == 'Software':
+                input_text += 'This user has purchased '
                 
             input_text += interact_text
-            
+
             if self.args.rec_pre_trained_data == 'Movies_and_TV':
                 input_text +=' in the previous. Recommend one next movie for this user to watch next from the following movie title set, '
             elif self.args.rec_pre_trained_data == 'Video_Games':
                 input_text +=' in the previous. Recommend one next game for this user to play next from the following game title set, '            
             elif self.args.rec_pre_trained_data == 'Luxury_Beauty' or self.args.rec_pre_trained_data == 'Toys_and_Games':
                 input_text +=' in the previous. Recommend one next item for this user to buy next from the following item title set, '
+            elif self.args.rec_pre_trained_data == 'Prime_Pantry':
+                input_text +=' in the previous. Recommend one next pantry item for this user to purchase next from the following item title set, '
+            elif self.args.rec_pre_trained_data == 'Gift_Cards':
+                input_text +=' in the previous. Recommend one next gift card for this user to buy next from the following gift card title set, '
+            elif self.args.rec_pre_trained_data == 'Magazine_Subscriptions':
+                input_text +=' in the previous. Recommend one next magazine for this user to subscribe to next from the following magazine title set, '
+            elif self.args.rec_pre_trained_data == 'Software':
+                input_text +=' in the previous. Recommend one next software for this user to purchase next from the following software title set, '
                     
             input_text += candidate_text
             input_text += '. The recommendation is '
@@ -347,15 +392,31 @@ class A_llmrec_model(nn.Module):
                     input_text += 'This user has played '
                 elif self.args.rec_pre_trained_data == 'Luxury_Beauty' or self.args.rec_pre_trained_data == 'Toys_and_Games':
                     input_text += 'This user has bought '
+                elif self.args.rec_pre_trained_data == 'Prime_Pantry':
+                    input_text += 'This user has purchased '
+                elif self.args.rec_pre_trained_data == 'Gift_Cards':
+                    input_text += 'This user has bought '
+                elif self.args.rec_pre_trained_data == 'Magazine_Subscriptions':
+                    input_text += 'This user has subscribed to '
+                elif self.args.rec_pre_trained_data == 'Software':
+                    input_text += 'This user has purchased '
                     
                 input_text += interact_text
-                
+
                 if self.args.rec_pre_trained_data == 'Movies_and_TV':
                     input_text +=' in the previous. Recommend one next movie for this user to watch next from the following movie title set, '
                 elif self.args.rec_pre_trained_data == 'Video_Games':
                     input_text +=' in the previous. Recommend one next game for this user to play next from the following game title set, '            
                 elif self.args.rec_pre_trained_data == 'Luxury_Beauty' or self.args.rec_pre_trained_data == 'Toys_and_Games':
                     input_text +=' in the previous. Recommend one next item for this user to buy next from the following item title set, '
+                elif self.args.rec_pre_trained_data == 'Prime_Pantry':
+                    input_text +=' in the previous. Recommend one next pantry item for this user to purchase next from the following item title set, '
+                elif self.args.rec_pre_trained_data == 'Gift_Cards':
+                    input_text +=' in the previous. Recommend one next gift card for this user to buy next from the following gift card title set, '
+                elif self.args.rec_pre_trained_data == 'Magazine_Subscriptions':
+                    input_text +=' in the previous. Recommend one next magazine for this user to subscribe to next from the following magazine title set, '
+                elif self.args.rec_pre_trained_data == 'Software':
+                    input_text +=' in the previous. Recommend one next software for this user to purchase next from the following software title set, '
                 
                 input_text += candidate_text
                 input_text += '. The recommendation is '
@@ -407,16 +468,172 @@ class A_llmrec_model(nn.Module):
             output_text = self.llm.llm_tokenizer.batch_decode(outputs, skip_special_tokens=True)
             output_text = [text.strip() for text in output_text]
 
-        for i in range(len(text_input)):
-            f = open(f'./recommendation_output.txt','a')
-            f.write(text_input[i])
-            f.write('\n\n')
-            
-            f.write('Answer: '+ answer[i])
-            f.write('\n\n')
-            
-            f.write('LLM: '+str(output_text[i]))
-            f.write('\n\n')
-            f.close()
+        with open(f'./recommendation_output.txt','a',errors='ignore') as f:
+            print(f"text_input:{len(text_input)}")
+            for i in range(len(text_input)):
+                f.write(text_input[i])
+                f.write('\n\n')
+                
+                f.write('Answer: '+ answer[i])
+                f.write('\n\n')
+                
+                f.write('LLM: '+str(output_text[i]))
+                f.write('\n\n')
 
         return output_text
+
+    def save_checkpoint(self, args, epoch, step, optimizer, metrics=None, is_best=False):
+        """
+        保存完整的训练检查点
+        
+        Args:
+            args: 训练参数
+            epoch: 当前epoch
+            step: 当前step
+            optimizer: 优化器状态
+            metrics: 评估指标（可选）
+            is_best: 是否是最佳模型
+        """
+        checkpoint_dir = f'./checkpoints/{args.rec_pre_trained_data}/'
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        
+        # 构建检查点
+        checkpoint = {
+            'epoch': epoch,
+            'step': step,
+            'args': vars(args),
+            'model_state_dict': self.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'metrics': metrics or {},
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # 如果有训练损失记录，也保存
+        if hasattr(self, 'training_losses'):
+            checkpoint['training_losses'] = self.training_losses
+        
+        # 保存最新检查点
+        latest_path = os.path.join(checkpoint_dir, 'checkpoint_latest.pth')
+        torch.save(checkpoint, latest_path)
+        print(f"✓ Saved checkpoint to {latest_path}")
+        
+        # 定期保存带epoch编号的检查点（每5个epoch）
+        if epoch % 5 == 0:
+            epoch_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch}.pth')
+            torch.save(checkpoint, epoch_path)
+            print(f"✓ Saved epoch checkpoint to {epoch_path}")
+        
+        # 保存最佳模型
+        if is_best:
+            best_path = os.path.join(checkpoint_dir, 'checkpoint_best.pth')
+            torch.save(checkpoint, best_path)
+            print(f"✓ Saved best model to {best_path}")
+            
+            # 记录最佳指标
+            best_metrics_path = os.path.join(checkpoint_dir, 'best_metrics.json')
+            with open(best_metrics_path, 'w') as f:
+                json.dump(metrics, f, indent=4)
+    
+    def load_checkpoint(self, checkpoint_path, optimizer=None, resume_training=True):
+        """
+        加载训练检查点
+        
+        Args:
+            checkpoint_path: 检查点路径
+            optimizer: 优化器（如果需要恢复训练）
+            resume_training: 是否恢复训练状态
+            
+        Returns:
+            start_epoch, start_step, metrics
+        """
+        if not os.path.exists(checkpoint_path):
+            print(f"Warning: Checkpoint not found at {checkpoint_path}")
+            return 0, 0, {}
+        
+        print(f"Loading checkpoint from {checkpoint_path}...")
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        
+        # 恢复模型状态
+        self.load_state_dict(checkpoint['model_state_dict'])
+        print("✓ Model state restored")
+        
+        # 恢复优化器状态
+        if optimizer is not None and resume_training:
+            try:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                print("✓ Optimizer state restored")
+            except Exception as e:
+                print(f"Warning: Could not restore optimizer state: {e}")
+        
+        # 恢复训练损失记录
+        if 'training_losses' in checkpoint and hasattr(self, 'training_losses'):
+            self.training_losses = checkpoint['training_losses']
+            print("✓ Training losses restored")
+        
+        start_epoch = checkpoint['epoch']
+        start_step = checkpoint.get('step', 0)
+        metrics = checkpoint.get('metrics', {})
+        
+        print(f"✓ Resuming from epoch {start_epoch}, step {start_step}")
+        if metrics:
+            print(f"  Previous metrics: {metrics}")
+        
+        return start_epoch, start_step, metrics
+    
+    def list_checkpoints(self, args):
+        """列出所有可用的检查点"""
+        checkpoint_dir = f'./checkpoints/{args.rec_pre_trained_data}/'
+        
+        if not os.path.exists(checkpoint_dir):
+            print("No checkpoints found.")
+            return []
+        
+        checkpoints = []
+        for filename in os.listdir(checkpoint_dir):
+            if filename.endswith('.pth'):
+                filepath = os.path.join(checkpoint_dir, filename)
+                checkpoint = torch.load(filepath, map_location='cpu')
+                checkpoints.append({
+                    'filename': filename,
+                    'epoch': checkpoint.get('epoch', 0),
+                    'step': checkpoint.get('step', 0),
+                    'metrics': checkpoint.get('metrics', {}),
+                    'timestamp': checkpoint.get('timestamp', 'Unknown')
+                })
+        
+        # 按epoch排序
+        checkpoints.sort(key=lambda x: x['epoch'], reverse=True)
+        
+        print("\n" + "="*60)
+        print("Available Checkpoints:")
+        print("="*60)
+        for ckpt in checkpoints:
+            print(f"  {ckpt['filename']}")
+            print(f"    Epoch: {ckpt['epoch']}, Step: {ckpt['step']}")
+            print(f"    Time: {ckpt['timestamp']}")
+            if ckpt['metrics']:
+                print(f"    Metrics: {ckpt['metrics']}")
+            print()
+        
+        return checkpoints
+    
+    def auto_resume(self, args, optimizer=None):
+        """
+        自动从最新检查点恢复训练
+        
+        Returns:
+            start_epoch, start_step, metrics
+        """
+        checkpoint_dir = f'./checkpoints/{args.rec_pre_trained_data}/'
+        latest_path = os.path.join(checkpoint_dir, 'checkpoint_latest.pth')
+        
+        if os.path.exists(latest_path):
+            print("\n" + "="*60)
+            print("Found existing checkpoint, resuming training...")
+            print("="*60 + "\n")
+            return self.load_checkpoint(latest_path, optimizer, resume_training=True)
+        else:
+            print("\n" + "="*60)
+            print("No checkpoint found, starting from scratch")
+            print("="*60 + "\n")
+            return 0, 0, {}

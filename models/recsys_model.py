@@ -17,6 +17,7 @@ def load_checkpoint(recsys, pre_trained):
     
     pth_file_path = find_filepath(path, '.pth')
     assert len(pth_file_path) == 1, 'There are more than two models in this dir. You need to remove other model files.\n'
+    # print(pth_file_path)
     kwargs, checkpoint = torch.load(pth_file_path[0], map_location="cpu")
     logging.info("load checkpoint from %s" % pth_file_path[0])
 
